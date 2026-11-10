@@ -341,6 +341,11 @@ public partial class World : NetworkBehaviour
         _removalWatch.Stop();
         RunCeilingBudget();
         _removalWatch.Start();
+        // A detached formation may require thousands of density changes. Let
+        // it have its own bounded time slice rather than one tiny batch after
+        // mining has already used the entire general removal time allowance.
+        float miningElapsed = (float)_removalWatch.Elapsed.TotalMilliseconds;
+        _removalWatch.Restart();
         int remaining = allowance.y + allowance.x - mined;
         bool hasRoof = _ceilingWork != null || _ceilingQueue.Count > 0;
         bool hasIsland = _collapseWork != null || _collapseQueue.Count > 0;
@@ -348,7 +353,7 @@ public partial class World : NetworkBehaviour
         if (remaining == 1 && hasRoof && hasIsland) _singleSampleRoofTurn = !_singleSampleRoofTurn;
         int roofUsed = ProcessRemovalLane(ref _ceilingWork, true, roofAllowance, true);
         ProcessRemovalLane(ref _collapseWork, true, remaining - roofUsed);
-        LastRemovalMilliseconds = (float)_removalWatch.Elapsed.TotalMilliseconds;
+        LastRemovalMilliseconds = miningElapsed + (float)_removalWatch.Elapsed.TotalMilliseconds;
     }
 
     private int ProcessRemovalLane(ref RemovalWork work, bool collapse, int allowance, bool ceiling = false)
@@ -359,7 +364,9 @@ public partial class World : NetworkBehaviour
         // has expired. This prevents starvation. It is not a hard frame-time cap.
         while (used < allowance && items++ < 32)
         {
-            if ((committed || items > 1) && _removalWatch.Elapsed.TotalMilliseconds >= Mathf.Max(0.1f, removalMillisecondsPerFrame)) break;
+            float timeAllowance = collapse && preserveDisconnectedShapes ?
+                Mathf.Max(0.1f, shapeRemovalMillisecondsPerFrame) : Mathf.Max(0.1f, removalMillisecondsPerFrame);
+            if ((committed || items > 1) && _removalWatch.Elapsed.TotalMilliseconds >= timeAllowance) break;
             if (work == null)
             {
                 if (collapse)
@@ -377,7 +384,7 @@ public partial class World : NetworkBehaviour
                 }
             }
             int batch = Mathf.Clamp(removalBatchSize, 16, 128);
-            if (collapse && _removalWatch.Elapsed.TotalMilliseconds >= Mathf.Max(0.1f, removalMillisecondsPerFrame)) batch = Mathf.Min(batch, 16);
+            if (collapse && _removalWatch.Elapsed.TotalMilliseconds >= timeAllowance) batch = Mathf.Min(batch, 16);
             int count = Mathf.Min(batch, Mathf.Min(allowance - used, work.Count - work.Cursor));
             if (count > 0)
             {
@@ -521,11 +528,21 @@ public partial class World : NetworkBehaviour
         LastMeshMilliseconds = 0f;
         if (_dirtyMeshOrder.Count == 0 || _receivingSnapshot) return;
         int builds = 0;
-        while (_dirtyMeshOrder.Count > 0 && builds < Mathf.Max(1, meshRebuildsPerFrame))
+        // Never spin forever when every pending chunk is protected by a swap.
+        int attempts = _dirtyMeshOrder.Count;
+        while (attempts-- > 0 && _dirtyMeshOrder.Count > 0 && builds < Mathf.Max(1, meshRebuildsPerFrame))
         {
             if (builds > 0 && _meshWatch.Elapsed.TotalMilliseconds >= Mathf.Max(0.1f, meshMillisecondsPerFrame)) break;
             Vector3Int coord = _dirtyMeshOrder.Dequeue();
-            _dirtyMeshes.Remove(coord);
+            // An in-progress detached shape owns this view until its complete
+            // replacement mesh and physics body are prepared. Keep showing the
+            // old mesh rather than exposing a partly erased statue.
+            if (IsChunkHeldForShapeSwap(coord))
+            {
+                _dirtyMeshOrder.Enqueue(coord);
+                continue;
+            }
+            if (!_dirtyMeshes.Remove(coord)) continue; // Stale queue item after an atomic swap.
             Chunk chunk;
             if (_activeChunks.TryGetValue(coord, out chunk))
             {

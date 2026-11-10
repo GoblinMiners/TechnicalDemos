@@ -167,7 +167,7 @@ MonoBehaviour:
   maxCollapseVolume: 100000
   structuralOperationsPerFrame: 4096
   structuralMillisecondsPerFrame: 3
-  densityChangesPerFrame: 1024
+  densityChangesPerFrame: 2048
   meshRebuildsPerFrame: 4
   removalMillisecondsPerFrame: 3
   removalBatchSize: 64
@@ -192,7 +192,8 @@ MonoBehaviour:
   collapseHazardActivationRadius: 24
   expeditionSettings: {fileID: 11400000, guid: c394ce6495281634780e928eb8d2df69, type: 2}
   preserveDisconnectedShapes: 1
-  shapeMeshCellsPerFrame: 4096
+  shapeMeshCellsPerFrame: 8192
+  shapeRemovalMillisecondsPerFrame: 5
   shapeCollisionBoxes: 48
   maximumCeilingColumnsPerChunk: 12
   shapeMaterialDensityKgPerM3: 1000
@@ -200,7 +201,7 @@ MonoBehaviour:
   detachedShapeLifetime: 20
   settledShapeLifetime: 5
   maximumDynamicShapeBodies: 24
-  shapePacketsPerFrame: 4
+  shapePacketsPerFrame: 6
   shapePoseInterval: 0.12
   minimumShapeImpactSpeed: 2
   damagePerShapeSizeAndSpeed: 8
@@ -220,6 +221,8 @@ MonoBehaviour:
   maximumCosmeticDebrisAgeSeconds: 0.5
   maximumPendingCosmeticDebris: 256
   maximumDebrisPieceSizeMetres: 0.35
+  shapeStagedChunksPerFrame: 2
+  shapeStagingMillisecondsPerFrame: 3
 --- !u!4 &5491321
 Transform:
   m_ObjectHideFlags: 0

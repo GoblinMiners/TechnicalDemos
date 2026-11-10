@@ -14,7 +14,9 @@ public partial class World
     [Header("Shape-preserving falling terrain")]
     public bool preserveDisconnectedShapes = true;
     [Tooltip("A disconnected component remains one visual mesh and Rigidbody, even when detailed or irregular.")]
-    [Min(1)] public int shapeMeshCellsPerFrame = 4096;
+    [Min(1)] public int shapeMeshCellsPerFrame = 8192;
+    [Tooltip("Separate soft time allowance for detected falling-shape removal. Raises responsiveness but uses more CPU.")]
+    [Min(0.1f)] public float shapeRemovalMillisecondsPerFrame = 5f;
     [Tooltip("Compound-box collision budget. Visual geometry remains full resolution.")]
     [UnityEngine.Range(8,128)] public int shapeCollisionBoxes = 48;
     [UnityEngine.Range(1,32)] public int maximumCeilingColumnsPerChunk = 12;
@@ -58,11 +60,14 @@ public partial class World
         foreach (TerrainShapeChunk piece in _shapes.Values)
             if (piece != null && piece.Body != null && !piece.Body.isKinematic) dynamicCount++;
         Debug.Log($"[Gobmine Shapes] Active={ActiveFallingShapes}, dynamic={dynamicCount}, pending={PendingFallingShapes}, " +
-            $"preparing={_preparingMeshes.Count}, networkQueued={_shapeSend.Count}, streamedPaused={_streamingSuspendedShapes.Count}, " +
+            $"preparing={_preparingMeshes.Count}, networkQueued={_shapeSend.Count}, " +
+            $"atomicSwaps={PendingVisualShapeSwaps}, heldTerrainViews={HeldTerrainChunkViews}, stagedViews={PreparedTerrainChunkViews}, streamedPaused={_streamingSuspendedShapes.Count}, " +
             $"restingFrozen={_budgetFrozenShapes.Count}, structuralPending={HasPendingStructuralWork}, " +
             $"pendingMeshes={PendingMeshRebuilds}, activeTerrainChunks={ActiveChunkCount}, " +
             $"ceilingLifetime={ceilingShapeLifetime:0.#}, detachedLifetime={detachedShapeLifetime:0.#}, " +
-            $"restingLifetime={settledShapeLifetime:0.#}, isServer={isServer}",this);
+            $"restingLifetime={settledShapeLifetime:0.#}, releases={AtomicShapeReleases}, " +
+            $"lastRelease={LastShapeReleaseSeconds:0.00}s, lastRemoval={LastShapeRemovalSeconds:0.00}s, " +
+            $"isServer={isServer}",this);
         int shown = 0;
         foreach (var pair in _shapes)
         {
@@ -76,6 +81,13 @@ public partial class World
                 $"velocity={piece.GetVelocity()}, nearPlayer={Mathf.Sqrt(NearestPlayerDistance(piece.transform.position)):0.0}m, " +
                 $"streamPaused={_streamingSuspendedShapes.Contains(pair.Key)}, budgetFrozen={_budgetFrozenShapes.Contains(pair.Key)}, " +
                 $"colliderCount={piece.Colliders.Count}, reason={why}",piece);
+        }
+        foreach (var transaction in _shapeSwaps.Values)
+        {
+            Debug.Log($"[Gobmine Swap {transaction.Id}] age={Time.unscaledTime-transaction.StartTime:0.00}s, " +
+                $"removalDone={transaction.RemovalComplete}, " +
+                $"meshPrepared={transaction.PreparedShape != null}, heldChunkViews={transaction.Chunks.Count}", this);
+            break;
         }
         if (_buildingShape != null) Debug.Log($"[Gobmine Shapes] Building shape {_buildingShape.Id}: " +
             $"{(_buildingMesh != null ? _buildingMesh.BuiltCells : 0)} mesh cells built; " +
@@ -151,6 +163,11 @@ public partial class World
         record.Position = ((Vector3)lo + (Vector3)hi)*(voxelSize*0.5f);
         _preparingMeshes[record.Id] = new TerrainShapeMeshJob(record,voxelSize,GetSolidMaterialId);
         _preparingOrder.Enqueue(record.Id);
+        BeginShapeSwapOnServer(record);
+        // Pipeline reliable shape data alongside the expensive removal, not
+        // AFTER the finished Rigidbody is spawned. This shortens client delay.
+        _shapeSend.Enqueue(new ShapeSend { Record = record });
+        _liveShapeSending.Add(record.Id);
         return record;
     }
 
@@ -178,8 +195,9 @@ public partial class World
     private void QueueShapeAfterRemoval(TerrainShapeRecord record)
     {
         if (record == null || record.Samples.Count == 0) return;
-        CaptureShapeMeshFence(record);
+        if (!_shapeSwaps.ContainsKey(record.Id)) CaptureShapeMeshFence(record);
         _shapePending.Enqueue(record);
+        FinishShapeSwapRemoval(record);
         // A later mining edit is allowed to dirty the same region again without
         // changing the version needed by THIS shape.
     }
@@ -220,25 +238,44 @@ public partial class World
             if (!_preparingMeshes.TryGetValue(_buildingShape.Id,out _buildingMesh))
                 _buildingMesh = new TerrainShapeMeshJob(_buildingShape,voxelSize,GetSolidMaterialId);
         }
+        if (_buildingShape != null && _removedClientShapes.Contains(_buildingShape.Id))
+        {
+            _buildingShape = null; _buildingMesh = null;
+        }
         if (_buildingShape != null)
         {
             // Prebuilt concurrently with removal on server; clients build after
             // their reliable shape snapshot completes. Never spawn before collider edits.
             if (!_buildingMesh.Complete) _buildingMesh.Step(Mathf.Max(1,shapeMeshCellsPerFrame));
-            if (_buildingMesh.Complete && ShapeTerrainViewsReady(_buildingShape))
+            if (_buildingMesh.Complete)
             {
                 TerrainShapeRecord record = _buildingShape;
-                _preparingMeshes.Remove(record.Id);
-                TerrainShapeChunk obj = CreateShapeChunk(record,_buildingMesh,isServer);
-                if (obj != null && isServer)
+                if (_shapeSwaps.ContainsKey(record.Id))
                 {
-                    _shapeRecords[record.Id] = record;
-                    _shapeSend.Enqueue(new ShapeSend { Record = record });
-                    _liveShapeSending.Add(record.Id);
+                    // Release the single builder immediately; overlapping
+                    // ceiling pieces can prepare while the first waits to swap.
+                    _preparingMeshes.Remove(record.Id);
+                    PrepareShapeForAtomicRelease(record, _buildingMesh);
+                    _buildingShape = null; _buildingMesh = null;
                 }
-                _buildingShape = null; _buildingMesh = null;
+                else if (ShapeTerrainViewsReady(record))
+                {
+                    // Saved/late-join shapes have no old view to keep intact.
+                    _preparingMeshes.Remove(record.Id);
+                    TerrainShapeChunk obj = CreateShapeChunk(record, _buildingMesh, isServer);
+                    if (obj != null && isServer)
+                    {
+                        _shapeRecords[record.Id] = record;
+                        _shapeSend.Enqueue(new ShapeSend { Record = record });
+                        _liveShapeSending.Add(record.Id);
+                    }
+                    _buildingShape = null; _buildingMesh = null;
+                }
             }
         }
+        // Server and remote clients independently stage terrain changes, then
+        // publish their complete visual/physics shape swap in one frame.
+        PublishReadyShapeSwaps();
         if (!isServer) return;
         SendLiveShapePackets();
         if (Time.time >= _nextShapePose)
@@ -434,6 +471,7 @@ public partial class World
         }
         _shapeRecords.Remove(id); _shapeColliderVersions.Remove(id);
         _shapeWaitReasons.Remove(id); _shapeSleepingSince.Remove(id);
+        _shapePendingPoses.Remove(id);
         var oldHits = new List<long>();
         foreach (long key in _shapeHitCooldown.Keys) if ((int)(key >> 32) == id) oldHits.Add(key);
         foreach (long key in oldHits) _shapeHitCooldown.Remove(key);
@@ -449,7 +487,9 @@ public partial class World
         {
             ShapeSend send = _shapeSend.Peek();
             TerrainShapeRecord r = send.Record;
-            if (!_shapes.ContainsKey(r.Id))
+            // A live shape now streams BEFORE removal is finished, so the
+            // receiving client may have the geometry ready before release.
+            if (!_shapes.ContainsKey(r.Id) && !_shapeSwaps.ContainsKey(r.Id))
             { _shapeSend.Dequeue(); _liveShapeSending.Remove(r.Id); continue; }
             if (send.Cursor < 0)
             {
@@ -470,7 +510,7 @@ public partial class World
     }
     private static void GetSamplePart(TerrainShapeRecord record,int start,out Vector3Int[] coords,out float[] density)
     {
-        int length = Mathf.Min(48,record.Samples.Count-start);
+        int length = Mathf.Min(192,record.Samples.Count-start);
         coords = new Vector3Int[length]; density = new float[length];
         for (int i = 0; i < length; i++) { TerrainShapeSample s = record.Samples[start+i];
             coords[i] = s.Grid; density[i] = s.Density; }
@@ -489,6 +529,8 @@ public partial class World
         if (isServer) return;
         _removedClientShapes.Add(id);
         _shapeDrafts.Remove(id);
+        CancelShapeSwap(id);
+        _shapePendingPoses.Remove(id);
         TerrainShapeChunk shape;
         if (_shapes.TryGetValue(id,out shape)) { _shapes.Remove(id); if (shape != null) Destroy(shape.gameObject); }
     }
@@ -500,6 +542,11 @@ public partial class World
         {
             TerrainShapeChunk shape;
             if (_shapes.TryGetValue(ids[i],out shape) && shape != null) shape.SetPose(positions[i],rotations[i]);
+            else if (!_removedClientShapes.Contains(ids[i]) &&
+                     (_shapeSwaps.ContainsKey(ids[i]) || _shapeDrafts.ContainsKey(ids[i]) ||
+                      _queuedClientShapes.Contains(ids[i]) ||
+                      (_buildingShape != null && _buildingShape.Id == ids[i])))
+                _shapePendingPoses[ids[i]] = new KeyValuePair<Vector3,Quaternion>(positions[i],rotations[i]);
         }
     }
     private void SendShapePoses()
@@ -568,7 +615,7 @@ public partial class World
             if (!_shapes.TryGetValue(r.Id,out shape) || shape == null) continue;
             Vector3 pos = shape.transform.position; Quaternion rot = shape.transform.rotation;
             TargetBeginShape(target,r.Id,r.Ceiling,pos,rot,r.Samples.Count);
-            for (int offset = 0; offset < r.Samples.Count; offset += 48)
+            for (int offset = 0; offset < r.Samples.Count; offset += 192)
             {
                 if (!NetworkServer.connections.ContainsKey(target.connectionId)) yield break;
                 GetSamplePart(r,offset,out Vector3Int[] coords,out float[] density);
@@ -663,6 +710,16 @@ public partial class World
             result.Add(_collapseWork.Shape);
         if (_buildingShape != null && !_buildingShape.Ceiling) result.Add(_buildingShape);
         foreach (var pending in _shapePending) if (!pending.Ceiling) result.Add(pending);
+        // Prepared but not yet published shapes have left the ordinary build
+        // queue. Their masks must still be saved if the server stops mid-swap.
+        foreach (var swap in _shapeSwaps.Values)
+        {
+            if (swap.Record == null || swap.Record.Ceiling) continue;
+            bool found = false;
+            foreach (TerrainShapeRecord prior in result)
+                if (prior.Id == swap.Record.Id) { found = true; break; }
+            if (!found) result.Add(swap.Record);
+        }
         return result;
     }
     private void LoadFallingShapeRecords(List<TerrainShapeRecord> records)
@@ -683,6 +740,7 @@ public partial class World
     {
         foreach (var shape in _shapes.Values) if (shape != null) Destroy(shape.gameObject);
         _shapes.Clear(); _shapeRecords.Clear(); _shapePending.Clear(); _shapeDrafts.Clear();
+        ResetShapeSwaps();
         _shapeSend.Clear(); _liveShapeSending.Clear(); _removedClientShapes.Clear(); _queuedClientShapes.Clear();
         _nextCollisionReadinessCheck.Clear(); _cachedCollisionReady.Clear(); _shapeHitCooldown.Clear(); _shapeRemove.Clear();
         _shapeSleepingSince.Clear();

@@ -65,9 +65,20 @@ public sealed class TerrainShapeMeshJob
         if (_solid.Count == 0) { Pivot = Vector3.zero; _cells = new List<Vector3Int>(); return; }
         Pivot = ((Vector3)lo + (Vector3)hi) * (0.5f * spacing);
         var cells = new HashSet<Vector3Int>();
+        // Only boundary samples can contribute triangles. The old builder
+        // scanned eight cells around EVERY solid voxel, including thousands of
+        // invisible interior cells in a large sculpture. Every mixed-sign cube
+        // contains a face-adjacent sign change, so this retains the exact same
+        // marching-cubes surface while making work proportional to surface area.
         foreach (Vector3Int p in _solid.Keys)
+        {
+            bool boundary = false;
+            foreach (Vector3Int direction in TerrainStructuralSolver.Directions)
+                if (!_solid.ContainsKey(p + direction)) { boundary = true; break; }
+            if (!boundary) continue;
             for (int x = 0; x <= 1; x++) for (int y = 0; y <= 1; y++) for (int z = 0; z <= 1; z++)
                 cells.Add(p - new Vector3Int(x,y,z));
+        }
         _cells = new List<Vector3Int>(cells);
         _cells.Sort((a,b) => { int d = a.x.CompareTo(b.x); if (d != 0) return d;
             d = a.y.CompareTo(b.y); return d != 0 ? d : a.z.CompareTo(b.z); });
@@ -205,6 +216,14 @@ public sealed class TerrainShapeChunk : MonoBehaviour
     private Mesh _mesh;
     private World _world;
 
+    /// <summary>Activate a fully prepared shape only AFTER the terrain colliders swap.</summary>
+    public void ReleasePreparedShape()
+    {
+        BornAt = Time.time;
+        gameObject.SetActive(true);
+        if (ServerOwned && Body != null) Body.WakeUp();
+    }
+
     public void Configure(TerrainShapeRecord source, TerrainShapeMeshJob job, World world,
         bool server, int maxBoxes, float kilogramsPerCubicMetre)
     {
@@ -236,7 +255,7 @@ public sealed class TerrainShapeChunk : MonoBehaviour
         {
             DebrisPool.SetLinearVelocity(Body,source.Velocity);
             Body.angularVelocity = source.AngularVelocity;
-            Body.WakeUp();
+            if (gameObject.activeInHierarchy) Body.WakeUp();
         }
     }
 
