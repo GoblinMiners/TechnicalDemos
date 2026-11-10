@@ -124,6 +124,8 @@ public partial class World : NetworkBehaviour
         public bool IsCollapse;
         public PlayerInventory Miner;
         public TerrainShapeRecord Shape;
+        public Vector3 OreDiscoveryPoint;
+        public float OreDiscoveryRadius;
     }
     // Reliable, revisioned late-join synchronization. Live deltas are retained while
     // a frozen baseline is streamed, then replayed after that baseline.
@@ -210,7 +212,7 @@ public partial class World : NetworkBehaviour
         _activeChunks.Clear(); _sleepingChunks.Clear();
         _chunksToGenerate.Clear(); _generationQueued.Clear(); _dirtyMeshes.Clear(); _dirtyMeshOrder.Clear();
         _structuralChanges.Clear(); _collapseQueue.Clear(); _edits.Clear();
-        ResetRubbleRuntime(); ResetCaveInRuntime(); ResetFallingShapes(); _bufferedDeltas.Clear();
+        ResetRubbleRuntime(); ResetCaveInRuntime(); ResetFallingShapes(); ResetOreChunks(); _bufferedDeltas.Clear();
         _syncingConnections.Clear();
         _miningWork = null; _collapseWork = null; _solver = null; _terrain = null; _densityReader = null;
         _singleSampleCollapseTurn = false;
@@ -249,6 +251,7 @@ public partial class World : NetworkBehaviour
         }
         using (MeshMarker.Auto()) FlushDirtyMeshes();
         UpdateFallingShapes();
+        if (isServer) UpdateOreChunks();
         // Each rubble bucket waits only for its OWN collision views, not for every
         // dirty chunk in a busy multiplayer world. Distant buckets cannot block it.
         if (isServer)
@@ -380,7 +383,12 @@ public partial class World : NetworkBehaviour
                 {
                     if (_edits.Count == 0) break;
                     PendingEdit edit = _edits.Dequeue();
-                    work = new RemovalWork { Changes = BuildBrush(edit), Miner = edit.Miner };
+                    // Populate hidden geological ore BEFORE the brush opens the wall.
+                    // The subsequent terrain rebuild reveals the ore, rather than spawning
+                    // an enormous new object on the newly exposed surface.
+                    PrewarmOreForMining(edit.Point,edit.Radius);
+                    work = new RemovalWork { Changes = BuildBrush(edit), Miner = edit.Miner,
+                        OreDiscoveryPoint = edit.Point, OreDiscoveryRadius = edit.Radius };
                 }
             }
             int batch = Mathf.Clamp(removalBatchSize, 16, 128);
@@ -395,6 +403,11 @@ public partial class World : NetworkBehaviour
             if (work.Cursor >= work.Count)
             {
                 if (collapse) QueueShapeAfterRemoval(work.Shape);
+                else
+                {
+                    RefreshOreAroundCompletedCut(work.OreDiscoveryPoint, work.OreDiscoveryRadius);
+                    QueueOreDiscovery(work.OreDiscoveryPoint,work.OreDiscoveryRadius+2f);
+                }
                 work = null;
             }
         }
@@ -643,6 +656,8 @@ public partial class World : NetworkBehaviour
         {
             IEnumerator shapeSnapshot = SendShapesForLateJoin(target);
             while (shapeSnapshot.MoveNext()) yield return shapeSnapshot.Current;
+            IEnumerator oreSnapshot = SendOreChunksForLateJoin(target);
+            while (oreSnapshot.MoveNext()) yield return oreSnapshot.Current;
         }
         _syncingConnections.Remove(target.connectionId);
         if (NetworkServer.connections.ContainsKey(target.connectionId)) TargetEndTerrainSnapshot(target);
@@ -663,6 +678,8 @@ public partial class World : NetworkBehaviour
         }
         _terrain = new TerrainDensityStore(chunkSize, voxelSize, _caverns);
         _densityReader = _terrain.Get;
+        ResetOreChunks();
+        InitializeOreChunkGenerator();
         InitializeExpeditionFluids();
         _lastFluidClientRevision = fluidRevision;
         _snapshotRevision = revision;

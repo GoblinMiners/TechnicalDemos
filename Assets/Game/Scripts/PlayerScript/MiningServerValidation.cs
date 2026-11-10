@@ -20,8 +20,17 @@ public static class MiningServerValidation
         Vector3 origin=pivot!=null?pivot.position:tool.transform.position+Vector3.up*1.6f;
         if(Vector3.Distance(origin,tool.transform.position)>3f)return;
         RaycastHit hit;
-        if(!Physics.Raycast(new Ray(origin,direction.normalized),out hit,Mathf.Min(reach,world.maxMineReach),layers,QueryTriggerInteraction.Ignore) ||
-            hit.collider.GetComponentInParent<Chunk>()==null)return;
+        // Ore bodies use the same mining ray, reach and server-side cooldown as terrain.
+        // No client-provided ore ID, quantity, or position is trusted.
+        int mask=layers.value | (1<<world.terrainLayer);
+        if(!Physics.Raycast(new Ray(origin,direction.normalized),out hit,Mathf.Min(reach,world.maxMineReach),mask,QueryTriggerInteraction.Ignore))return;
+        MineableOreChunk ore=hit.collider.GetComponentInParent<MineableOreChunk>();
+        if (ore!=null)
+        {
+            world.ServerMineOre(inventory,ore,Mathf.Min(power*cooldown,world.maxMineAmount));
+            return;
+        }
+        if (hit.collider.GetComponentInParent<Chunk>()==null) return;
         world.QueuePlayerMining(inventory,hit.point,Mathf.Min(radius,world.maxMineRadius),Mathf.Min(power*cooldown,world.maxMineAmount));
     }
     private static bool Finite(float f)=>!float.IsNaN(f)&&!float.IsInfinity(f);

@@ -62,6 +62,7 @@ public partial class World
             InitializeExpeditionGenerator();
             _terrain=new TerrainDensityStore(chunkSize,voxelSize,_caverns);_densityReader=_terrain.Get;
             _materials=new TerrainMaterialGenerator(seed,materialCatalog,voxelSize,ExpeditionEnabled ? ExpeditionProfile.surfaceReferenceY : 0f);
+            InitializeOreChunkGenerator();
             _resourcePiles=new ResourcePileStore();
             if(loaded)
             {
@@ -74,6 +75,7 @@ public partial class World
                 }
                 _resourcePiles.Import(saved.Resources);
                 LoadFallingShapeRecords(saved.Shapes);
+                LoadOreChunkRecords(saved.OreChunks);
             }
             else if(importLegacyDensitySave && !ExpeditionEnabled) _terrain.ImportLegacyChunks(WorldSaver.LoadWorld(chunkSize)); // Never import legacy densities into a different cavern generator.
             InitializeExpeditionFluids();
@@ -92,6 +94,7 @@ public partial class World
         _worldRulesSignature=signature;
         seed=worldSeed; InitializeExpeditionGenerator(); _materialCache.Clear();
         _materials=new TerrainMaterialGenerator(seed,materialCatalog,voxelSize,ExpeditionEnabled ? ExpeditionProfile.surfaceReferenceY : 0f);
+        InitializeOreChunkGenerator();
     }
     private void ResetMaterialRuntime()
     {
@@ -388,6 +391,7 @@ public partial class World
             s.ExpeditionUnlocks = expeditionUnlocks;
             if (_fluids != null) s.Fluids = _fluids.CopyOverrides();
             s.Shapes = SnapshotFallingShapesForSave();
+            s.OreChunks = SnapshotOreChunksForSave();
             MaterialWorldPersistence.Write(MaterialSavePath,s);return true;
         }
         catch(Exception ex){Debug.LogError("[Gobmine Material Save] "+ex);return false;}

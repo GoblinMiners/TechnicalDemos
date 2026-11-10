@@ -24,6 +24,12 @@ public sealed class MiningInventoryHUD : MonoBehaviour
         RaycastHit hit;
         if(Physics.Raycast(new Ray(_camera.transform.position,_camera.transform.forward),out hit,10f,1<<world.terrainLayer,QueryTriggerInteraction.Ignore))
         {
+            var ore=hit.collider.GetComponentInParent<MineableOreChunk>();
+            if (ore!=null)
+            {
+                var definition=world.MaterialCatalog.Get(ore.MaterialId);
+                if(definition!=null)_target=definition.displayName+" (mineable chunk)";
+            }
             var chunk=hit.collider.GetComponentInParent<Chunk>();
             if(chunk!=null)
             {

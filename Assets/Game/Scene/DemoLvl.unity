@@ -209,13 +209,22 @@ MonoBehaviour:
   knockbackPerShapeSizeAndSpeed: 1.7
   maximumShapeKnockbackSpeed: 14
   shapeImpactCooldown: 0.75
-  materialCatalog: {fileID: 11400000, guid: a083a6ef564f5c845b82d5297d63f6d0, type: 2}
+  materialCatalog: {fileID: 11400000, guid: 80ec30e6415dbd5418c6f5ba04f6a1f4, type: 2}
   resourcePickupPrefab: {fileID: 5108917710695762759, guid: 67739a353a53594f9140cc9bd686359b, type: 3}
   maxVisibleResourcePickups: 128
   resourcePickupReach: 2
   materialAutosaveSeconds: 60
-  materialSaveFileName: world_expedition_v1.dat
+  materialSaveFileName: world_ore_chunks_v1.dat
   importLegacyDensitySave: 0
+  maxActiveOreChunks: 64
+  oreChunkStreamDistance: 36
+  oreChunkDiscoveryChecksPerFrame: 12
+  oreChunkMinimumRadius: 0.28
+  oreChunkMaximumRadius: 0.65
+  oreChunkPreloadDistance: 12
+  oreChunkImmediateMiningChecks: 32
+  oreChunkWorkshopSafeRadiusMetres: 4
+  oreChunksDetachWhenUndermined: 1
   playerCollisionBuildsPerFrame: 1
   playerCollisionMillisecondsPerFrame: 2
   maximumCosmeticDebrisAgeSeconds: 0.5

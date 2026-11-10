@@ -153,6 +153,7 @@ public partial class World
             foreach (var source in sources)
                 total += source.Rate * Mathf.Clamp01(1f-Vector3.Distance(position, source.Position)/radius);
         }
+        total+=RadiationAtOreChunks(position);
         if (_resourcePiles != null)
             foreach (var pile in _resourcePiles.Nearby(position, radius))
             {

@@ -9,7 +9,7 @@ using UnityEngine;
 public static class MaterialWorldPersistence
 {
     private const string Magic = "GMBMAT01";
-    public const int FormatVersion = 3;
+    public const int FormatVersion = 4;
     public struct DensityPoint { public Vector3Int Position; public float Value; }
     public sealed class Snapshot
     {
@@ -23,6 +23,7 @@ public static class MaterialWorldPersistence
         public int ExpeditionUnlocks;
         public List<GobmineFluidPoint> Fluids = new List<GobmineFluidPoint>();
         public List<TerrainShapeRecord> Shapes = new List<TerrainShapeRecord>();
+        public List<MineableOreRecord> OreChunks = new List<MineableOreRecord>();
     }
     public static string DefaultPath => Path.Combine(Application.persistentDataPath,"world_materials_v1.dat");
 
@@ -64,7 +65,7 @@ public static class MaterialWorldPersistence
         {
             using(var w=new BinaryWriter(buffer,Encoding.UTF8,true))
             {
-                int format = s.Shapes.Count > 0 ? FormatVersion :
+                int format = s.OreChunks.Count>0 ? FormatVersion : s.Shapes.Count>0 ? 3 :
                     s.ExpeditionState || s.ExpeditionUnlocks != 0 || s.Fluids.Count > 0 ? 2 : 1;
                 w.Write(Encoding.ASCII.GetBytes(Magic)); w.Write(format); w.Write(TerrainMaterialCatalog.GeneratorVersion);
                 w.Write(s.Seed); WritePosition(w,s.ChunkSize); w.Write(s.VoxelSize); w.Write(s.RulesSignature ?? "");
@@ -92,6 +93,18 @@ public static class MaterialWorldPersistence
                         { WritePosition(w,sample.Grid); w.Write(sample.Density); }
                     }
                 }
+                if (format >= 4)
+                {
+                    w.Write(s.OreChunks.Count);
+                    foreach (MineableOreRecord ore in s.OreChunks)
+                    {
+                        w.Write(ore.Id);w.Write(ore.MaterialId);WritePosition(w,ore.GeneratorCell);
+                        WritePosition(w,ore.AnchorSample);WriteVector(w,ore.Position);
+                        WriteQuaternion(w,ore.Rotation);WriteVector(w,ore.Velocity);
+                        WriteVector(w,ore.AngularVelocity);w.Write(ore.Radius);
+                        w.Write(ore.TotalUnits);w.Write(ore.RemainingUnits);w.Write(ore.Detached);
+                    }
+                }
             }
             byte[] payload=buffer.ToArray();
             using(var sha=SHA256.Create()) { byte[] hash=sha.ComputeHash(payload); buffer.Write(hash,0,hash.Length); }
@@ -112,7 +125,7 @@ public static class MaterialWorldPersistence
         {
             if(Encoding.ASCII.GetString(r.ReadBytes(8))!=Magic) throw new InvalidDataException("Unsupported save signature.");
             int format = r.ReadInt32();
-            if ((format != 1 && format != 2 && format != FormatVersion) || r.ReadInt32()!=TerrainMaterialCatalog.GeneratorVersion)
+            if ((format < 1 || format > FormatVersion) || r.ReadInt32()!=TerrainMaterialCatalog.GeneratorVersion)
                 throw new InvalidDataException("Unsupported save/generator version.");
             var s=new Snapshot { Seed=r.ReadInt32(),ChunkSize=ReadPosition(r),VoxelSize=r.ReadSingle(),RulesSignature=r.ReadString() };
             if(s.ChunkSize.x<1 || s.ChunkSize.y<1 || s.ChunkSize.z<1 || !Finite(s.VoxelSize) || s.VoxelSize<=0 || s.RulesSignature.Length!=64)
@@ -181,6 +194,31 @@ public static class MaterialWorldPersistence
                     }
                     if (!anySolid) throw new InvalidDataException("Detached shape has no solid samples.");
                     s.Shapes.Add(shape);
+                }
+            }
+            if(format>=4)
+            {
+                count=r.ReadInt32();CheckCount(count,109,stream);
+                var oreIds=new HashSet<long>();
+                for(int i=0;i<count;i++)
+                {
+                    var ore=new MineableOreRecord {Id=r.ReadInt64(),MaterialId=r.ReadInt32(),
+                        GeneratorCell=ReadPosition(r),AnchorSample=ReadPosition(r),
+                        Position=ReadVector(r),Rotation=ReadQuaternion(r),
+                        Velocity=ReadVector(r),AngularVelocity=ReadVector(r),
+                        Radius=r.ReadSingle(),TotalUnits=r.ReadDouble(),RemainingUnits=r.ReadDouble(),Detached=r.ReadBoolean()};
+                    if(ore.Id<=0 || !oreIds.Add(ore.Id) || ore.MaterialId<=0 ||
+                        !Finite(ore.Position.x) || !Finite(ore.Position.y) || !Finite(ore.Position.z) ||
+                        !Finite(ore.Radius) || ore.Radius<=0f || ore.Radius>2.25f ||
+                        !Finite(ore.Rotation.x) || !Finite(ore.Rotation.y) || !Finite(ore.Rotation.z) || !Finite(ore.Rotation.w) ||
+                        !Finite(ore.Velocity.x) || !Finite(ore.Velocity.y) || !Finite(ore.Velocity.z) ||
+                        !Finite(ore.AngularVelocity.x) || !Finite(ore.AngularVelocity.y) || !Finite(ore.AngularVelocity.z) ||
+                        double.IsNaN(ore.TotalUnits) || double.IsInfinity(ore.TotalUnits) || ore.TotalUnits<=0d ||
+                        double.IsNaN(ore.RemainingUnits) || double.IsInfinity(ore.RemainingUnits) ||
+                        ore.RemainingUnits<0d || ore.RemainingUnits>ore.TotalUnits ||
+                        ore.Id != OreChunkGenerator.StableId(ore.GeneratorCell,ore.MaterialId))
+                        throw new InvalidDataException("Invalid ore-chunk state.");
+                    s.OreChunks.Add(ore);
                 }
             }
             if(stream.Position!=stream.Length) throw new InvalidDataException("Unexpected save trailing data.");

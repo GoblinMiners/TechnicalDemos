@@ -16,6 +16,8 @@ public sealed class TerrainMaterialDefinition : ScriptableObject
 
     [Header("Ore generation (ignored for the catalogue's base stone)")]
     public bool generateDeposits;
+    [Tooltip("When enabled, this ore spawns as separate mineable rock bodies at exposed surfaces, not as colored terrain veins. Changes world-generation rules; start a NEW save.")]
+    public bool spawnMineableChunks;
     [Min(4)] public int depositGridSizeInCells = 48;
     [UnityEngine.Range(0,1000)] public int depositChancePerThousand = 500;
     [Min(1)] public int minimumRadiusInCells = 3;

@@ -36,7 +36,7 @@ public sealed class TerrainMaterialGenerator
     {
         var result = new List<Rule>();
         foreach (var d in catalogue.definitions)
-            if (d.materialId != catalogue.baseStoneId && d.generateDeposits)
+            if (d.materialId != catalogue.baseStoneId && d.generateDeposits && !d.spawnMineableChunks)
             {
                 int minY = d.minimumCellY, maxY = d.maximumCellY;
                 if (d.useDepthBand)

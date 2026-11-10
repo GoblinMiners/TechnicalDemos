@@ -41,6 +41,8 @@ public sealed class TerrainMaterialCatalog : ScriptableObject
                     throw new InvalidOperationException("Different inventory assets share an item ID.");
                 _items[d.inventoryItem.mineralID] = d.inventoryItem;
             }
+            if (d.spawnMineableChunks && (d.materialId==baseStoneId || !d.generateDeposits || d.inventoryItem==null || d.itemsPerCubicMetre<=0d))
+                throw new InvalidOperationException(d.name+" cannot spawn mineable ore chunks without a deposit rule and positive inventory yield.");
             if (d.generateDeposits && (d.depositGridSizeInCells < 4 || d.depositGridSizeInCells > 1024 || d.minimumRadiusInCells < 1 ||
                 d.maximumRadiusInCells < d.minimumRadiusInCells || d.maximumRadiusInCells > d.depositGridSizeInCells / 2 ||
                 d.minimumCellY > d.maximumCellY || d.depositChancePerThousand < 0 || d.depositChancePerThousand > 1000))
@@ -82,6 +84,7 @@ public sealed class TerrainMaterialCatalog : ScriptableObject
              .Append(':').Append(d.generateDeposits ? 1 : 0).Append(':').Append(d.depositGridSizeInCells)
              .Append(':').Append(d.depositChancePerThousand).Append(':').Append(d.minimumRadiusInCells)
              .Append(':').Append(d.maximumRadiusInCells).Append(':').Append(d.minimumCellY).Append(':').Append(d.maximumCellY);
+            if (d.spawnMineableChunks) s.Append(":ORECHUNK1");
             // Default new fields preserve signatures for existing, non-expedition worlds.
             if (d.useDepthBand || d.requiredToolTier != 0 || d.radiationRate > 0f || d.requireRadiationSuit || d.requireShieldedContainer)
                 s.Append(":EXP1:").Append(d.useDepthBand ? 1 : 0).Append(':').Append(d.minimumDepthMetres.ToString("R", CultureInfo.InvariantCulture))
